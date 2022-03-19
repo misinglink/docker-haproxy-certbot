@@ -1,43 +1,65 @@
-# haproxy1.6.9 with certbot
-FROM debian:jessie
+FROM alpine:3.15
 
-RUN apt-get update && apt-get install -y libssl1.0.0 libpcre3 --no-install-recommends && rm -rf /var/lib/apt/lists/*
+ENV HAPROXY_MAJOR 2.5
+ENV HAPROXY_VERSION 2.5.5
+ENV HAPROXY_MD5 8d27d8a58159d7f3389d80f6a6d98795
 
-# Setup HAProxy
-ENV HAPROXY_MAJOR 1.6
-ENV HAPROXY_VERSION 1.6.9
-RUN buildDeps='curl gcc libc6-dev libpcre3-dev libssl-dev make' \
-  && set -x \
-  && apt-get update && apt-get install -y $buildDeps --no-install-recommends && rm -rf /var/lib/apt/lists/* \
-  && curl -SL "http://www.haproxy.org/download/${HAPROXY_MAJOR}/src/haproxy-${HAPROXY_VERSION}.tar.gz" -o haproxy.tar.gz \
+RUN set -x \
+  \
+  && apk add --no-cache --virtual .build-deps \
+    ca-certificates \
+    gcc \
+    libc-dev \
+    linux-headers \
+    make \
+    openssl-dev \
+    pcre-dev \
+    readline-dev \
+    tar \
+    zlib-dev \
+# install HAProxy
+  && wget -O haproxy.tar.gz "http://www.haproxy.org/download/${HAPROXY_MAJOR}/src/haproxy-${HAPROXY_VERSION}.tar.gz" \
+  && echo "$HAPROXY_MD5 *haproxy.tar.gz" | md5sum -c \
   && mkdir -p /usr/src/haproxy \
   && tar -xzf haproxy.tar.gz -C /usr/src/haproxy --strip-components=1 \
   && rm haproxy.tar.gz \
-  && make -C /usr/src/haproxy \
-    TARGET=linux2628 \
-    USE_PCRE=1 PCREDIR= \
+  \
+  && makeOpts=' \
+    TARGET=linux-musl \
     USE_OPENSSL=1 \
+    USE_PCRE=1 PCREDIR= \
     USE_ZLIB=1 \
-    all \
-    install-bin \
-  && mkdir -p /config \
+  ' \
+  && make -C /usr/src/haproxy -j "$(getconf _NPROCESSORS_ONLN)" all $makeOpts \
+  && make -C /usr/src/haproxy install-bin $makeOpts \
+  \
   && mkdir -p /usr/local/etc/haproxy \
   && cp -R /usr/src/haproxy/examples/errorfiles /usr/local/etc/haproxy/errors \
   && rm -rf /usr/src/haproxy \
-  && apt-get purge -y --auto-remove $buildDeps
+  \
+  && runDeps="$( \
+    scanelf --needed --nobanner --format '%n#p' --recursive /usr/local \
+      | tr ',' '\n' \
+      | sort -u \
+      | awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
+  )" \
+  && apk add --virtual .haproxy-rundeps $runDeps \
+  && apk del .build-deps
 
-# Install Supervisor, cron, libnl-utils, net-tools, iptables
-RUN apt-get update && apt-get install -y supervisor cron libnl-utils net-tools iptables && \
-  apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# Install certbot, supervisor, cron, libnl-utils, net-tools, iptables
+RUN apk add --no-cache --update \
+    supervisor \
+    dcron \
+    libnl3-cli \
+    net-tools \
+    iproute2 \
+    certbot \
+    openssl \
+  && rm -rf /var/cache/apk/*
 
 # Setup Supervisor
 RUN mkdir -p /var/log/supervisor
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-
-# Install Certbot
-RUN echo 'deb http://ftp.debian.org/debian jessie-backports main' > /etc/apt/sources.list.d/jessie-backports.list
-RUN apt-get update && apt-get install -y certbot -t jessie-backports && \
-  apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Setup Certbot
 RUN mkdir -p /usr/local/etc/haproxy/certs.d
@@ -46,13 +68,21 @@ COPY certbot.cron /etc/cron.d/certbot
 COPY cli.ini /usr/local/etc/letsencrypt/cli.ini
 COPY haproxy-refresh.sh /usr/bin/haproxy-refresh
 COPY haproxy-restart.sh /usr/bin/haproxy-restart
+COPY haproxy-check.sh /usr/bin/haproxy-check
 COPY certbot-certonly.sh /usr/bin/certbot-certonly
 COPY certbot-renew.sh /usr/bin/certbot-renew
-RUN chmod +x /usr/bin/haproxy-refresh /usr/bin/haproxy-restart /usr/bin/certbot-certonly /usr/bin/certbot-renew
+RUN chmod +x /usr/bin/haproxy-refresh /usr/bin/haproxy-restart /usr/bin/haproxy-check /usr/bin/certbot-certonly /usr/bin/certbot-renew
 
 # Add startup script
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
+
+EXPOSE 80 443
+VOLUME ["/config/", "/etc/letsencrypt/", "/usr/local/etc/haproxy/certs.d/"]
+
+# not run supercisdor as root 
+RUN useradd -ms /bin/bash tasteatx
+USER tasteatx
 
 # Start
 CMD ["/start.sh"]

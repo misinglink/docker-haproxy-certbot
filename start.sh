@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 set -e
 
@@ -51,4 +51,4 @@ nl-qdisc-add --dev=lo --parent=1:4 --id=40: --update plug --release-indefinite
 tc filter add dev lo protocol ip parent 1:0 prio 1 handle 1 fw classid 1:4
 
 # Run Supervisor
-exec /usr/bin/supervisord
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
