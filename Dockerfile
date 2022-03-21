@@ -4,6 +4,15 @@ ENV HAPROXY_MAJOR 2.5
 ENV HAPROXY_VERSION 2.5.5
 ENV HAPROXY_MD5 8d27d8a58159d7f3389d80f6a6d98795
 
+# not run supercisdor as root 
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --ingroup "wheel" \
+    --no-create-home \
+    --uid "1000" \
+    "admin"
+
 RUN set -x \
   \
   && apk add --no-cache --virtual .build-deps \
@@ -59,6 +68,8 @@ RUN apk add --no-cache --update \
 
 # Setup Supervisor
 RUN mkdir -p /var/log/supervisor
+RUN chown admin:wheel /var/log/supervisor
+RUN chmod 775 /var/log/supervisor
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Setup Certbot
@@ -77,12 +88,20 @@ RUN chmod +x /usr/bin/haproxy-refresh /usr/bin/haproxy-restart /usr/bin/haproxy-
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
+## allow admin to have acces to /var/run
+RUN chown admin:wheel /var/run
+RUN chmod 775 /var/run
+
 EXPOSE 80 443
 VOLUME ["/config/", "/etc/letsencrypt/", "/usr/local/etc/haproxy/certs.d/"]
 
-# not run supercisdor as root 
-RUN useradd -ms /bin/bash tasteatx
-USER tasteatx
+# https://www.haproxy.org/download/1.8/doc/management.txt
+# "4. Stopping and restarting HAProxy"
+# "when the SIGTERM signal is sent to the haproxy process, it immediately quits and all established connections are closed"
+# "graceful stop is triggered when the SIGUSR1 signal is sent to the haproxy process"
+STOPSIGNAL SIGUSR1
+
 
 # Start
 CMD ["/start.sh"]
+
